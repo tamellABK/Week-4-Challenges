@@ -5,17 +5,12 @@
 const int MAX_GUESS = 20;
 const int MIN_GUESS = 1;
 
+// Map for reached PHT_Prompt packets to reference
 std::map<int, std::string> PromptMappings
 {
     { 0 , "\nGuess a number between " + std::to_string(MIN_GUESS) + "-" + std::to_string(MAX_GUESS) + "!: "},
     { 1 , "\nYou Won!\n"},
     { 2 , "\nYou Lost!\n"}
-};
-
-enum PlayerTurnTable
-{
-    PTT_First = 0,
-    PTT_Second = 1
 };
 
 enum PacketHeaderTypes
@@ -32,6 +27,7 @@ struct GamePacket
     PacketHeaderTypes Type = PHT_Invalid;
 };
 
+// Response packet to received guess from client
 struct IsCorrectPacket : public GamePacket
 {
     IsCorrectPacket()
@@ -43,6 +39,7 @@ struct IsCorrectPacket : public GamePacket
     bool isCurrentPlayer = false;
 };
 
+// Packet sent to server to include player guess
 struct GuessPacket : public GamePacket
 {
     GuessPacket()
@@ -53,6 +50,7 @@ struct GuessPacket : public GamePacket
     int guessValue = 0;
 };
 
+// Packet sent to client to send messages
 struct PromptPacket : public GamePacket
 {
     PromptPacket()

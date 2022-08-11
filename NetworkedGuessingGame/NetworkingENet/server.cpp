@@ -6,23 +6,32 @@
 
 using namespace std;
 
-ENetHost* CreateServerInstance();
-
 template <typename T>
 void SendEncapPacket(ENetHost* server, GamePacket* packetType, bool sendToAll, T data);
+
+ENetHost* CreateServerInstance();
 void WaitForAllPlayerConnections(ENetHost* server);
 void HandleReceivePacket(ENetHost* server, const ENetEvent& event);
 int SwapPlayers(int currentPlayer);
 
+// Has the current player been sent the Guessing Prompt
 bool hasPromptedCurrentPlayer;
-bool continueGame = true;
-int currentPlayerCount = 0;
-int currentPlayer;
-int numberToGuess;
 
+// Should we continue the game (ie has someone not yet guessed the number / has someone disconnected
+bool continueGame = true;
+
+// Total players connected (Max 2)
+int currentPlayerCount = 0;
+
+// Current player (0 = first connected player, 1 = second connected player
+int currentPlayer;
+
+// Goal number
+int numberToGuess;
 
 int main()
 {
+    // Server creation
     ENetHost* server = CreateServerInstance();
     if (server == NULL)
     {
@@ -31,10 +40,12 @@ int main()
         exit(EXIT_FAILURE);
     }
 
+    // Don't progress server until 2 players connected
     WaitForAllPlayerConnections(server);
 
     ENetEvent event;
 
+    // Seed and get all random initializations
     srand(time(NULL));
     currentPlayer = rand() % 2;
 
@@ -45,6 +56,7 @@ int main()
     {
         if (!hasPromptedCurrentPlayer)
         {
+            // Send prompt packet to player
             hasPromptedCurrentPlayer = true;
             PromptPacket packet = PromptPacket();
             SendEncapPacket<int>(server, &packet, false, 0);
@@ -64,6 +76,8 @@ int main()
                 /* Reset the peer's client information. */
                 event.peer->data = NULL;
 
+                // If 2 player max, and 1 leaves, send to all 
+                // remaining connected they won (since that's only 1 person)
                 PromptPacket promptPacket = PromptPacket();
                 SendEncapPacket<int>(server, &promptPacket, true, 1);
             }
@@ -73,6 +87,63 @@ int main()
     enet_host_destroy(server);
 
     return EXIT_SUCCESS;
+}
+
+// Additional sendToAll parameter to push if packet should be sent to all connections
+template <typename T>
+void SendEncapPacket(ENetHost* server, GamePacket* packetType, bool sendToAll, T data)
+{
+    if (packetType->Type == PHT_Prompt)
+    {
+        // Send prompt to player according to passed data int (Check PromptMappings)
+        PromptPacket* promptPacket = new PromptPacket();
+        promptPacket->promptMap = data;
+        ENetPacket* packet = enet_packet_create(promptPacket,
+            sizeof(PromptPacket), ENET_PACKET_FLAG_RELIABLE);
+        if (sendToAll)
+        {
+            enet_host_broadcast(server, 0, packet);
+        }
+        else
+        {
+            // If currentPlayer is 0, send to first peers element, other send second peers element
+            enet_peer_send(server->peers + currentPlayer, 0, packet);
+        }
+        enet_host_flush(server);
+        delete promptPacket;
+    }
+    else if (packetType->Type == PHT_IsGuessCorrect)
+    {
+        // Send first packet to currentPlayer
+        IsCorrectPacket* isCorrectPacket = new IsCorrectPacket();
+        isCorrectPacket->isCurrentPlayer = true;
+        isCorrectPacket->isCorrect = (data == numberToGuess);
+
+        ENetPacket* packet = enet_packet_create(isCorrectPacket,
+            sizeof(IsCorrectPacket), ENET_PACKET_FLAG_RELIABLE);
+
+        enet_peer_send(server->peers + currentPlayer, 0, packet);
+
+        // Send packet again but to second player with associated bool
+        isCorrectPacket->isCurrentPlayer = false;
+
+        packet = enet_packet_create(isCorrectPacket,
+            sizeof(IsCorrectPacket), ENET_PACKET_FLAG_RELIABLE);
+
+        enet_peer_send(server->peers + SwapPlayers(currentPlayer), 0, packet);
+
+        enet_host_flush(server);
+        delete isCorrectPacket;
+
+        // After sending response, swap to other player and resend prompt
+        currentPlayer = SwapPlayers(currentPlayer);
+        hasPromptedCurrentPlayer = false;
+
+        if (data == numberToGuess)
+        {
+            continueGame = false;
+        }
+    }
 }
 
 ENetHost* CreateServerInstance()
@@ -99,57 +170,6 @@ ENetHost* CreateServerInstance()
         0      /* assume any amount of outgoing bandwidth */);
 
     return server;
-}
-
-template <typename T>
-void SendEncapPacket(ENetHost* server, GamePacket* packetType, bool sendToAll, T data)
-{
-    if (packetType->Type == PHT_Prompt)
-    {
-        PromptPacket* promptPacket = new PromptPacket();
-        promptPacket->promptMap = data;
-        ENetPacket* packet = enet_packet_create(promptPacket,
-            sizeof(PromptPacket), ENET_PACKET_FLAG_RELIABLE);
-        if (sendToAll)
-        {
-            enet_host_broadcast(server, 0, packet);
-        }
-        else
-        {
-            enet_peer_send(server->peers + currentPlayer, 0, packet);
-        }
-        enet_host_flush(server);
-        delete promptPacket;
-    }
-    else if (packetType->Type == PHT_IsGuessCorrect)
-    {
-        IsCorrectPacket* isCorrectPacket = new IsCorrectPacket();
-        isCorrectPacket->isCurrentPlayer = true;
-        isCorrectPacket->isCorrect = (data == numberToGuess);
-
-        ENetPacket* packet = enet_packet_create(isCorrectPacket,
-            sizeof(IsCorrectPacket), ENET_PACKET_FLAG_RELIABLE);
-
-        enet_peer_send(server->peers + currentPlayer, 0, packet);
-
-        isCorrectPacket->isCurrentPlayer = false;
-
-        packet = enet_packet_create(isCorrectPacket,
-            sizeof(IsCorrectPacket), ENET_PACKET_FLAG_RELIABLE);
-
-        enet_peer_send(server->peers + SwapPlayers(currentPlayer), 0, packet);
-
-        enet_host_flush(server);
-        delete isCorrectPacket;
-
-        currentPlayer = SwapPlayers(currentPlayer);
-        hasPromptedCurrentPlayer = false;
-        
-        if (data == numberToGuess)
-        {
-            continueGame = false;
-        }
-    }
 }
 
 void WaitForAllPlayerConnections(ENetHost* server)
@@ -189,12 +209,6 @@ void WaitForAllPlayerConnections(ENetHost* server)
     }
 }
 
-int SwapPlayers(int currentPlayer)
-{
-    if (currentPlayer == PTT_First) return PTT_Second;
-    return PTT_First;
-}
-
 void HandleReceivePacket(ENetHost* server, const ENetEvent& event)
 {
     GamePacket* RecGamePacket = (GamePacket*)(event.packet->data);
@@ -206,6 +220,7 @@ void HandleReceivePacket(ENetHost* server, const ENetEvent& event)
 
             cout << "Is: " << guessPacket->guessValue << " == " << numberToGuess << endl;
 
+            // Send IsCorrectPacket based on GuessPacket
             IsCorrectPacket isCorrectPacket = IsCorrectPacket();
             SendEncapPacket<int>(server, &isCorrectPacket, false, guessPacket->guessValue);
         }
@@ -221,4 +236,10 @@ void HandleReceivePacket(ENetHost* server, const ENetEvent& event)
     {
         enet_host_flush(server);
     }
+}
+
+int SwapPlayers(int currentPlayer)
+{
+    if (currentPlayer == 0) return 1;
+    return 0;
 }

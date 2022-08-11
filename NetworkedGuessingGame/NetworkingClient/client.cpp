@@ -7,21 +7,27 @@
 
 using namespace std;
 
-void InGuessingGameLoop(ENetPeer* peer);
-void RecieveEvents(ENetHost* client, ENetEvent event, ENetPeer* peer);
-ENetHost* CreateClientInstance();
-void HandleReceivePacket(ENetHost* client, const ENetEvent& event);
-bool ChangeTurn();
-
 template <typename T>
 void SendEncapPacket(ENetPeer* peer, GamePacket* packetType, T data);
 
+ENetHost* CreateClientInstance();
+void InGuessingGameLoop(ENetPeer* peer);
+void ReceiveEvents(ENetHost* client, ENetEvent event, ENetPeer* peer);
+void HandleReceivePacket(ENetHost* client, const ENetEvent& event);
+bool ChangeTurn();
+
+// Still connected to server
 bool stillConnected;
+
+// This player turn to guess
 bool turnToGuess;
+
+// Has the game finished
 bool gameOver;
 
 int main()
 {
+    // Client creation
     ENetHost* client = CreateClientInstance();
     if (client == NULL)
     {
@@ -33,10 +39,9 @@ int main()
     ENetEvent event;
     ENetPeer* peer;
 
-    /* Connect to localhost:1234. */
+    // LocalHost client connection
     enet_address_set_host(&address, "localhost");
     address.port = 1234;
-    /* Initiate the connection, allocating the two channels 0 and 1. */
     peer = enet_host_connect(client, &address, 2, 0);
 
     if (peer == NULL)
@@ -45,6 +50,7 @@ int main()
             "No available peers for initiating an ENet connection.\n");
         exit(EXIT_FAILURE);
     }
+    // Attempt initial connection
     if (enet_host_service(client, &event, 5000) > 0 &&
         event.type == ENET_EVENT_TYPE_CONNECT)
     {
@@ -61,54 +67,36 @@ int main()
         return EXIT_FAILURE;
     }
 
-    thread listeningThread(RecieveEvents, client, event, peer);
+    thread listeningThread(ReceiveEvents, client, event, peer);
 
-    // Chat Input Loop
+    // In-game loop
     InGuessingGameLoop(peer);
 
     // Host Destroy and Cleanup
     enet_host_destroy(client);
     stillConnected = false;
+
+    // Return once thread finishes
     listeningThread.join();
-    return 0;
+    return EXIT_SUCCESS;
 }
 
-void InGuessingGameLoop(ENetPeer* peer)
+// Template for sending encapsulated packets, last variable is associated with GamePacket type
+template <typename T>
+void SendEncapPacket(ENetPeer* peer, GamePacket* packetType, T data)
 {
-    while (!gameOver)
+    if (packetType->Type == PHT_Guess)
     {
-        if (turnToGuess)
-        {
-            string userInput;
-            getline(cin, userInput);
+        GuessPacket* guessPacket = new GuessPacket();
+        guessPacket->guessValue = data;
 
-            if (userInput == "QUIT") {
-                stillConnected = false;
-                break;
-            }
+        ENetPacket* packet = enet_packet_create(guessPacket,
+            sizeof(GuessPacket), ENET_PACKET_FLAG_RELIABLE);
+        enet_peer_send(peer, 0, packet);
+        delete guessPacket;
 
-            try
-            {
-                int numberToGuess = stoi(userInput);
-                GuessPacket guessPacket = GuessPacket();
-                SendEncapPacket<int>(peer, &guessPacket, numberToGuess);
-            }
-            catch(exception e)
-            {
-                cout << userInput << " is not a number! Try again!: ";
-            }
-        }
-    }
-}
-
-void RecieveEvents(ENetHost* client, ENetEvent event, ENetPeer* peer)
-{
-    while (stillConnected)
-    {
-        while (enet_host_service(client, &event, 1000) > 0)
-        {
-            if(event.type == ENET_EVENT_TYPE_RECEIVE) HandleReceivePacket(client, event);
-        }
+        // After sending successful guess, other player must go
+        turnToGuess = ChangeTurn();
     }
 }
 
@@ -130,6 +118,50 @@ ENetHost* CreateClientInstance()
     return client;
 }
 
+void InGuessingGameLoop(ENetPeer* peer)
+{
+    cout << "Type 'QUIT' to leave the game and close the program!\n";
+    while (!gameOver)
+    {
+        if (turnToGuess)
+        {
+            string userInput;
+            getline(cin, userInput);
+
+            if (userInput == "QUIT") {
+                stillConnected = false;
+                break;
+            }
+
+            // If input string not able to be converted to int, then loop again
+            try
+            {
+                int numberToGuess = stoi(userInput);
+                GuessPacket guessPacket = GuessPacket();
+                SendEncapPacket<int>(peer, &guessPacket, numberToGuess);
+            }
+            catch(exception e)
+            {
+                cout << userInput << " is not a number! Try again!: ";
+            }
+        }
+    }
+}
+
+// Receive function to be in separate thread
+void ReceiveEvents(ENetHost* client, ENetEvent event, ENetPeer* peer)
+{
+    // As long as we're connected, keep listening
+    while (stillConnected)
+    {
+        while (enet_host_service(client, &event, 1000) > 0)
+        {
+            if(event.type == ENET_EVENT_TYPE_RECEIVE) HandleReceivePacket(client, event);
+        }
+    }
+}
+
+// Handle all encapsulated packets
 void HandleReceivePacket(ENetHost* client, const ENetEvent& event)
 {
     GamePacket* RecGamePacket = (GamePacket*)(event.packet->data);
@@ -137,15 +169,20 @@ void HandleReceivePacket(ENetHost* client, const ENetEvent& event)
     {
         if (RecGamePacket->Type == PHT_Prompt)
         {
+            // Cout prompt mapping to player console
             PromptPacket* promptPacket = (PromptPacket*)(event.packet->data);
             cout << PromptMappings[promptPacket->promptMap];
+
+            // If prompt is received, its players turn
             turnToGuess = true;
         }
         else if (RecGamePacket->Type == PHT_IsGuessCorrect)
         {
             IsCorrectPacket* isCorrectPacket = (IsCorrectPacket*)(event.packet->data);
+            // Game is over if correct
             if (isCorrectPacket->isCorrect)
             {
+                // Cout determined by if the player is the current player
                 if (isCorrectPacket->isCurrentPlayer) cout << PromptMappings[1];
                 else cout << PromptMappings[2];
 
@@ -174,21 +211,4 @@ bool ChangeTurn()
 {
     if (turnToGuess == true) return false;
     return true;
-}
-
-template <typename T>
-void SendEncapPacket(ENetPeer* peer, GamePacket* packetType, T data)
-{
-    if (packetType->Type == PHT_Guess)
-    {
-        GuessPacket* guessPacket = new GuessPacket();
-        guessPacket->guessValue = data;
-
-        ENetPacket* packet = enet_packet_create(guessPacket,
-            sizeof(GuessPacket), ENET_PACKET_FLAG_RELIABLE);
-        enet_peer_send(peer, 0, packet);
-        delete guessPacket;
-
-        turnToGuess = ChangeTurn();
-    }
 }
